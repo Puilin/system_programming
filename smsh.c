@@ -85,7 +85,7 @@ int main(void){
                     perror("creat");
                     exit(1);
                 }
-                dup2(fd, 1);
+                dup2(fd, STDOUT_FILENO);
                 close(fd);
                 parsed_cmd[idx-1] = NULL;
                 execvp(parsed_cmd[0], parsed_cmd);
@@ -96,14 +96,57 @@ int main(void){
                     perror("creat");
                     exit(1);
                 }
-                dup2(fd, 1);
+                dup2(fd, STDOUT_FILENO);
                 close(fd);
                 parsed_cmd[idx-1] = NULL;
+                execvp(parsed_cmd[0], parsed_cmd);
+            }
+            /* input redirection */
+            if (in_red == 1) {
+                if((fd = open(parsed_cmd[idx], O_CREAT | O_RDONLY | O_APPEND, 0644)) == -1){
+                    perror("creat");
+                    exit(1);
+                }
+                dup2(fd, STDIN_FILENO);
+                close(fd);
+                parsed_cmd[idx-1] = NULL;
+                execvp(parsed_cmd[0], parsed_cmd);
+            }
+            /* << */
+            if (here == 1) {
+                if((fd = open("tmp", O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1){
+                    perror("creat");
+                    exit(1);
+                }
+                write(STDOUT_FILENO, "> ", 3);
+                int nr;
+                int end = 1;
+                char temp[512], *token;
+                while (end) {
+                    nr = read(0, temp, 512);
+                    write(fd, temp, nr);
+                    write(STDOUT_FILENO, "> ", 3);
+                    token = strtok(temp, "\n");
+                    int k = 0;
+                    while (token != NULL) {
+                        if (strcmp(token, parsed_cmd[idx]) == 0) {
+                            end = 0;
+                            break;
+                        }
+                        token = strtok(NULL, " ");
+                    }
+                }
+                fflush(stdout);
+                close(fd);
+                parsed_cmd[idx-1] = "tmp";
+                parsed_cmd[idx] = NULL;
                 execvp(parsed_cmd[0], parsed_cmd);
             }
             execvp(parsed_cmd[0], parsed_cmd);
         } else if (pid > 0) {
             waitpid(pid, NULL, 0);
+            if (here == 1)
+                unlink("tmp");
         }
     }
     
