@@ -18,17 +18,19 @@ void fatal(char *msg) {
 }
 
 int main(void){
+    int noclob = 0;
     while (1) {
-        int fd;
+        int fd, pfd[2];
         char *cwd;
         char cmd[1024];
 
         int amp = 0, in_red = 0, out_red = 0, err_red = 0, history = 0,
-        out_override = 0, append = 0, piping = 0, noclob = 0, multiple = 0; // flags
+        chd = 0, out_override = 0, append = 0, piping = 0, multiple = 0; // flags
 
         int cmd_cnt = 0; // count ";" characters
+        int pipe_cnt = 0; // count "|" characters
 
-        char *parsed_cmd[16]; // parsed commands buffer
+        char *parsed_cmd[16] = {"\0"}; // parsed commands buffer
         char *parsed; // temporary buffer for parsing
 
         cwd = getcwd(NULL, 1024);
@@ -60,7 +62,7 @@ int main(void){
         for (j = 0; parsed_cmd[j]; j++) {
             char *temp = parsed_cmd[j];
             if (strcmp(temp, "noclobber") == 0) {
-                noclob = 1;
+                noclob = !noclob;
             }
             if (strcmp(temp, "history") == 0) {
                 history = 1;
@@ -68,6 +70,17 @@ int main(void){
                     fprintf(stdout, "%d  %s\n", k, hist[k]);
                 }
                 break;
+            }
+            if (strcmp(temp, "cd") == 0) {
+                chd = 1;
+                chdir(parsed_cmd[j+1]);
+                break;
+            }
+            if (strcmp(temp, "exit") == 0) {
+                while (hist_cnt) {
+                    free(hist[hist_cnt--]);
+                }
+                return 0;
             }
             if (strcmp(temp, ">|") == 0) {
                 out_override = 1;
@@ -91,17 +104,18 @@ int main(void){
             }
             if (strcmp(temp, "|") == 0) {
                 piping = 1;
+                pipe_cnt++;
                 idx = j;
             }
             if (temp[strlen(temp)-1] == ';') {
                 multiple = 1;
                 cmd_cnt += 1;
             }
-            if (temp[strlen(parsed_cmd[j])-1] == '&' || strcmp(temp, "&") == 0)
+            if (temp[strlen(temp)-1] == '&' || strcmp(temp, "&") == 0)
                 amp = 1;
         }
 
-        if (history == 1)
+        if (history == 1 || chd == 1) // prevent waste of fork()
             continue;
 
         pid_t pid;
@@ -114,59 +128,83 @@ int main(void){
             pid = fork();
             if (pid == 0) {
                 /* output redirection */
-                if (out_red == 1) {     
-                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1) {
-                        perror("creat");
-                        exit(1);
+                if (out_red == 1) {
+                    if (noclob == 1) {
+                        if((fd = open(parsed_cmd[idx+1], O_CREAT | O_WRONLY | O_EXCL, 0644)) == -1) {
+                            fprintf(stderr, "%s: cannot overwrite existing file\n", parsed_cmd[idx+1]);
+                            continue;
+                        }
+                    } else {
+                        if((fd = open(parsed_cmd[idx+1], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1) {
+                            perror("creat");
+                            exit(1);
+                        }
                     }
+                    
                     dup2(fd, STDOUT_FILENO);
                     close(fd);
-                    parsed_cmd[idx-1] = NULL;
+                    parsed_cmd[idx] = NULL;
                     execvp(parsed_cmd[0], parsed_cmd);
                 }
                 /* >> */
                 if (append == 1) {
-                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1){
+                    if((fd = open(parsed_cmd[idx+1], O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1){
                         perror("creat");
                         exit(1);
                     }
                     dup2(fd, STDOUT_FILENO);
                     close(fd);
-                    parsed_cmd[idx-1] = NULL;
+                    parsed_cmd[idx] = NULL;
                     execvp(parsed_cmd[0], parsed_cmd);
                 }
                 /* input redirection */
                 if (in_red == 1) {
-                    if((fd = open(parsed_cmd[idx], O_CREAT | O_RDONLY | O_APPEND, 0644)) == -1){
+                    if((fd = open(parsed_cmd[idx+1], O_CREAT | O_RDONLY | O_APPEND, 0644)) == -1){
                         perror("creat");
                         exit(1);
                     }
                     dup2(fd, STDIN_FILENO);
                     close(fd);
-                    parsed_cmd[idx-1] = NULL;
+                    parsed_cmd[idx] = NULL;
                     execvp(parsed_cmd[0], parsed_cmd);
                 }
                 /* error redirection */
                 if (err_red == 1) {
-                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1){
+                    if((fd = open(parsed_cmd[idx+1], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1){
                         perror("creat");
                         exit(1);
                     }
                     dup2(fd, STDERR_FILENO);
                     close(fd);
-                    parsed_cmd[idx-1] = NULL;
+                    parsed_cmd[idx] = NULL;
                     execvp(parsed_cmd[0], parsed_cmd);
                 }
                 /* >| */
                 if (out_override == 1) {
-                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1) {
+                    if((fd = open(parsed_cmd[idx+1], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1) {
                         perror("creat");
                         exit(1);
                     }
                     dup2(fd, STDOUT_FILENO);
                     close(fd);
-                    parsed_cmd[idx-1] = NULL;
+                    parsed_cmd[idx] = NULL;
                     execvp(parsed_cmd[0], parsed_cmd);
+                }
+                /* pipe */
+                if (piping == 1) {
+                    if (pipe(pfd) < 0)
+                        fatal("pipe");
+                    pid_t pid2 = fork();
+                    if (pid2 == 0) {
+                        close(pfd[0]);
+                        dup2(pfd[1], STDOUT_FILENO);
+                        parsed_cmd[idx] = NULL;
+                        execvp(parsed_cmd[0], parsed_cmd);
+                    } else if (pid2 > 0) {
+                        close(pfd[1]);
+                        dup2(pfd[0], STDIN_FILENO);
+                        execvp(parsed_cmd[idx+1], &parsed_cmd[idx+1]);
+                    }
                 }
                 execvp(parsed_cmd[0], parsed_cmd);
             } else if (pid > 0) {
