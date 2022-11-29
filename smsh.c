@@ -6,6 +6,12 @@
 #include <errno.h>
 #include <sys/wait.h>
 
+#define MAXHIST 1024
+
+/* for history */
+int hist_cnt = 0;
+char *hist[MAXHIST];
+
 void fatal(char *msg) {
     perror(msg);
     exit(1);
@@ -17,8 +23,10 @@ int main(void){
         char *cwd;
         char cmd[1024];
 
-        int amp = 0, in_red = 0, out_red = 0,
-        out_override = 0, append = 0, here = 0, piping = 0, noclob = 0; // flags
+        int amp = 0, in_red = 0, out_red = 0, err_red = 0, history = 0,
+        out_override = 0, append = 0, piping = 0, noclob = 0, multiple = 0; // flags
+
+        int cmd_cnt = 0; // count ";" characters
 
         char *parsed_cmd[16]; // parsed commands buffer
         char *parsed; // temporary buffer for parsing
@@ -30,6 +38,11 @@ int main(void){
         //fflush(stdout);
         int num_read = read(0, cmd, 1024);
         cmd[num_read-1] = '\0';
+
+        char *cmd_cpy = (char *)malloc(sizeof(char) * num_read);
+        strcpy(cmd_cpy, cmd);
+        hist[hist_cnt] = (char *)malloc(sizeof(char) * strlen(cmd_cpy));
+        hist[hist_cnt++] = cmd_cpy;
 
         parsed = strtok(cmd, " ");
         int i = 0;
@@ -49,6 +62,13 @@ int main(void){
             if (strcmp(temp, "noclobber") == 0) {
                 noclob = 1;
             }
+            if (strcmp(temp, "history") == 0) {
+                history = 1;
+                for (int k=0; k<hist_cnt; k++) {
+                    fprintf(stdout, "%d  %s\n", k, hist[k]);
+                }
+                break;
+            }
             if (strcmp(temp, ">|") == 0) {
                 out_override = 1;
                 idx = j;
@@ -61,94 +81,101 @@ int main(void){
                 append = 1;
                 idx = j;
             }
+            else if (strcmp(temp, "2>") == 0) {
+                err_red = 1;
+                idx = j;
+            }
             else if (strcmp(temp, "<") == 0) {
                 in_red = 1;
                 idx = j;
             }
-            else if (strcmp(temp, "<<") == 0) {
-                here = 1;
-                idx = j;
-            }
-            if (strcmp(temp, "|") == 0)
+            if (strcmp(temp, "|") == 0) {
                 piping = 1;
                 idx = j;
+            }
+            if (temp[strlen(temp)-1] == ';') {
+                multiple = 1;
+                cmd_cnt += 1;
+            }
             if (temp[strlen(parsed_cmd[j])-1] == '&' || strcmp(temp, "&") == 0)
                 amp = 1;
         }
-            
 
-        pid_t pid = fork();
-        if (pid == 0) {
-            /* output redirection */
-            if (out_red == 1) {
-                if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1){
-                    perror("creat");
-                    exit(1);
-                }
-                dup2(fd, STDOUT_FILENO);
-                close(fd);
-                parsed_cmd[idx-1] = NULL;
-                execvp(parsed_cmd[0], parsed_cmd);
-            }
-            /* >> */
-            if (append == 1) {
-                if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1){
-                    perror("creat");
-                    exit(1);
-                }
-                dup2(fd, STDOUT_FILENO);
-                close(fd);
-                parsed_cmd[idx-1] = NULL;
-                execvp(parsed_cmd[0], parsed_cmd);
-            }
-            /* input redirection */
-            if (in_red == 1) {
-                if((fd = open(parsed_cmd[idx], O_CREAT | O_RDONLY | O_APPEND, 0644)) == -1){
-                    perror("creat");
-                    exit(1);
-                }
-                dup2(fd, STDIN_FILENO);
-                close(fd);
-                parsed_cmd[idx-1] = NULL;
-                execvp(parsed_cmd[0], parsed_cmd);
-            }
-            /* << */
-            if (here == 1) {
-                if((fd = open("tmp", O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1){
-                    perror("creat");
-                    exit(1);
-                }
-                write(STDOUT_FILENO, "> ", 3);
-                int nr;
-                int end = 1;
-                char temp[512], *token;
-                while (end) {
-                    nr = read(0, temp, 512);
-                    write(fd, temp, nr);
-                    write(STDOUT_FILENO, "> ", 3);
-                    token = strtok(temp, "\n");
-                    int k = 0;
-                    while (token != NULL) {
-                        if (strcmp(token, parsed_cmd[idx]) == 0) {
-                            end = 0;
-                            break;
-                        }
-                        token = strtok(NULL, " ");
+        if (history == 1)
+            continue;
+
+        pid_t pid;
+
+        if (multiple == 1) {
+            // something happens
+        }
+
+        else {
+            pid = fork();
+            if (pid == 0) {
+                /* output redirection */
+                if (out_red == 1) {     
+                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1) {
+                        perror("creat");
+                        exit(1);
                     }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                    parsed_cmd[idx-1] = NULL;
+                    execvp(parsed_cmd[0], parsed_cmd);
                 }
-                fflush(stdout);
-                close(fd);
-                parsed_cmd[idx-1] = "tmp";
-                parsed_cmd[idx] = NULL;
+                /* >> */
+                if (append == 1) {
+                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1){
+                        perror("creat");
+                        exit(1);
+                    }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                    parsed_cmd[idx-1] = NULL;
+                    execvp(parsed_cmd[0], parsed_cmd);
+                }
+                /* input redirection */
+                if (in_red == 1) {
+                    if((fd = open(parsed_cmd[idx], O_CREAT | O_RDONLY | O_APPEND, 0644)) == -1){
+                        perror("creat");
+                        exit(1);
+                    }
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                    parsed_cmd[idx-1] = NULL;
+                    execvp(parsed_cmd[0], parsed_cmd);
+                }
+                /* error redirection */
+                if (err_red == 1) {
+                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1){
+                        perror("creat");
+                        exit(1);
+                    }
+                    dup2(fd, STDERR_FILENO);
+                    close(fd);
+                    parsed_cmd[idx-1] = NULL;
+                    execvp(parsed_cmd[0], parsed_cmd);
+                }
+                /* >| */
+                if (out_override == 1) {
+                    if((fd = open(parsed_cmd[idx], O_CREAT | O_WRONLY | O_TRUNC, 0644)) == -1) {
+                        perror("creat");
+                        exit(1);
+                    }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                    parsed_cmd[idx-1] = NULL;
+                    execvp(parsed_cmd[0], parsed_cmd);
+                }
                 execvp(parsed_cmd[0], parsed_cmd);
+            } else if (pid > 0) {
+                waitpid(pid, NULL, 0);
             }
-            execvp(parsed_cmd[0], parsed_cmd);
-        } else if (pid > 0) {
-            waitpid(pid, NULL, 0);
-            if (here == 1)
-                unlink("tmp");
         }
     }
+        
+        
     
     return 0;
 }
