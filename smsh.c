@@ -19,6 +19,7 @@ void fatal(char *msg) {
 
 int main(void){
     int noclob = 0;
+    int job_cnt = 0;
     while (1) {
         int fd, pfd[2];
         char *cwd;
@@ -32,20 +33,23 @@ int main(void){
 
         char *parsed_cmd[16] = {"\0"}; // parsed commands buffer
         char *parsed; // temporary buffer for parsing
-
+        
+        /* print current working directory */
         cwd = getcwd(NULL, 1024);
-        write(STDOUT_FILENO, "yunseok@termproj:", 18);
-        write(STDOUT_FILENO, cwd, strlen(cwd));
-        write(STDOUT_FILENO, "$ ", 3);
-        //fflush(stdout);
+        printf("yunseok@termproj:");
+        printf("%s", cwd);
+        printf("$ ");
+        fflush(stdout);
         int num_read = read(0, cmd, 1024);
         cmd[num_read-1] = '\0';
 
+        /* history array allocation */
         char *cmd_cpy = (char *)malloc(sizeof(char) * num_read);
         strcpy(cmd_cpy, cmd);
         hist[hist_cnt] = (char *)malloc(sizeof(char) * strlen(cmd_cpy));
         hist[hist_cnt++] = cmd_cpy;
 
+        /* command parsing */
         parsed = strtok(cmd, " ");
         int i = 0;
         while (parsed != NULL && i < 16) {
@@ -57,6 +61,7 @@ int main(void){
             fatal("More than 15 words cannot accepted");
         parsed_cmd[i] = NULL;
 
+        /* check operataors and save its index */
         int j, idx = -1;
         char c;
         for (j = 0; parsed_cmd[j]; j++) {
@@ -111,7 +116,7 @@ int main(void){
                 multiple = 1;
                 cmd_cnt += 1;
             }
-            if (temp[strlen(temp)-1] == '&' || strcmp(temp, "&") == 0)
+            if (strcmp(temp, "&") == 0)
                 amp = 1;
         }
 
@@ -127,6 +132,9 @@ int main(void){
         else {
             pid = fork();
             if (pid == 0) {
+                if (amp == 1) {
+                    parsed_cmd[i-1] = NULL;
+                }
                 /* output redirection */
                 if (out_red == 1) {
                     if (noclob == 1) {
@@ -159,7 +167,7 @@ int main(void){
                 }
                 /* input redirection */
                 if (in_red == 1) {
-                    if((fd = open(parsed_cmd[idx+1], O_CREAT | O_RDONLY | O_APPEND, 0644)) == -1){
+                    if((fd = open(parsed_cmd[idx+1], O_CREAT | O_RDONLY, 0644)) == -1){
                         perror("creat");
                         exit(1);
                     }
@@ -208,6 +216,12 @@ int main(void){
                 }
                 execvp(parsed_cmd[0], parsed_cmd);
             } else if (pid > 0) {
+                if (amp == 1) {
+                    waitpid(pid, NULL, WNOHANG);
+                    job_cnt++;
+                    fprintf(stdout, "[%d]  %d\n", job_cnt, pid);
+                    continue;
+                }
                 waitpid(pid, NULL, 0);
             }
         }
